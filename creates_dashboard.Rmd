@@ -1,0 +1,218 @@
+---
+title: "Idaho DEQ Lewiston Regional Office (LRO) Dashboard"
+output:
+  flexdashboard::flex_dashboard:
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+
+library(flexdashboard)
+library(shiny)
+library(leaflet)
+library(leaflet.esri)
+library(dplyr)
+library(ggplot2)
+library(DT)
+library(rgdal)
+```
+
+```{r global, include = FALSE}
+
+source("downloads_WQP_data.R")
+
+huclist <-levels(unique(as.factor(results$hucnames)))
+
+sitelist <-levels(unique(as.factor(results$sitename)))
+
+```
+
+Sidebar {.sidebar}
+=====================================================================================
+Explore LRO data in Water Quality Portal (www.waterqualitydata.us)
+
+```{r}
+#dropdown to select HUC
+selectInput("hucnames", label = "Step 1: Select a Hydrologic Unit Code (HUC)", choices = sort(huclist),
+            selected = "17060306 Clearwater")
+
+#data frame with selected HUC
+selectedHUC <-
+  reactive({
+    results %>%
+      filter(hucnames == input$hucnames)
+  })
+
+# dropdown to select site
+renderUI({selectInput("sitename", label = "Step 2: Select a WQP Site",
+                      choices = sort(selectedHUC()$sitename),
+                      selected = "2018LEWHC67_02 - IDEQ_WQX-2018LEWHC67_02")})
+
+# data frame with selected site results
+selectedsite <-
+  reactive({
+    selectedHUC() %>%
+      filter(sitename == input$sitename) %>%
+      arrange(sitename)
+  })
+
+# dropdown with parameters for selected site
+renderUI({selectInput("parameter", label = "Step 3: Select a Parameter",
+                      choices = sort(selectedsite()$parameter),
+                      selected = "Flow (cfs)")})
+
+```
+
+The selcted site appears as a blue marker on the map. View selected data on the plot and
+use the 'data table' tab to view, sort, filter, and download selected data.
+
+Zoom in and place the cursor over a stream line to identify an assessment unit (AU) #. Click the stream line for a link
+to see AU support status info (2018/2020 Integrated Report). Note that support status information is not available for waters within indian reservation boundaries. Click a BURP site (grey dots) for a link to BURP data.
+
+
+Map & Plot
+==========================================================================================
+### DEQ-LRO Data in Water Quality Portal
+
+```{r}
+
+selected_for_map <-
+  reactive({
+    sites %>%
+      filter(sitename == input$sitename) %>%
+      arrange(sitename)
+  })
+ 
+renderLeaflet({
+  leaflet() %>%
+  setView(lat = 46.4004, lng = -117.0012, zoom = 6) %>%
+    
+    # streams 2018/2020 IR
+    addEsriFeatureLayer(url = "https://mapcase.deq.idaho.gov/arcgis/rest/services/ID305B_2020_WMS/MapServer/14", 
+                        weight = 1.5, fill = FALSE, labelProperty = "ENTITY_ID", 
+                        labelOptions = labelOptions(textsize = "12px"), popupProperty = "DATALINK",
+                        group = "streams") %>%
+    
+    # lakes 2018/2020 IR
+    addEsriFeatureLayer(url = "https://mapcase.deq.idaho.gov/arcgis/rest/services/ID305B_2020_WMS/MapServer/8", 
+                        weight = 1.5, fill = FALSE, labelProperty = "ENTITY_ID", 
+                        labelOptions = labelOptions(textsize = "12px"), popupProperty = "DATALINK",
+                        group = "lakes") %>%
+    
+
+  # BURP
+    addEsriFeatureLayer(url = "https://mapcase.deq.idaho.gov/arcgis/rest/services/ID305B_2020_WMS/MapServer/1",
+                      useServiceSymbology = FALSE, markerType = "circleMarker", 
+                      markerOptions = markerOptions(color = "grey", radius = 2),
+                      labelProperty = "BURPID", labelOptions = labelOptions(textsize = "12px"),
+                      popupProperty = "DATALINK", group = "BURP sites",
+                      options = featureLayerOptions(useCors = FALSE)) %>%
+    
+  # WQP Sites
+  addCircleMarkers(data = sites, lng = ~LongitudeMeasure, lat = ~LatitudeMeasure, color = "gold",
+              radius = 4, popup = ~paste(sitename, "<br>", "HUC:", HUCEightDigitCode, sep = ""),
+              group = "WQP Sites") %>%
+  
+    addProviderTiles("Esri.WorldTopoMap") %>%
+  addMarkers(data = selected_for_map(), lng = ~LongitudeMeasure, lat = ~LatitudeMeasure,
+             popup = ~paste(sitename, "<br>", "HUC:", HUCEightDigitCode, sep = ""),
+             group = "selected site") %>%
+  addLayersControl(overlayGroups = c("streams", "lakes", "BURP sites", "WQP Sites"), options =  
+                       layersControlOptions(collapsed = FALSE))
+    
+})
+
+
+```
+
+### Plot - selected site and parameter
+```{r}
+selectedData <-
+  reactive({
+    results %>%
+      filter(sitename == input$sitename) %>%
+      filter(parameter == input$parameter)
+  })
+
+renderPlot({
+  ggplot(selectedData(), aes(x = date, y = result, color = ActivityTypeCode)) +
+    geom_point() +
+    labs(x = "Date", y = input$parameter) +
+    theme_bw() +
+    scale_x_date(date_labels = "%b %d %Y") +
+    ggtitle(input$sitename)
+})
+
+
+```
+
+Data Table
+=================================================================================================
+
+```{r}
+
+for_table <-
+  reactive({
+    selectedData() %>%
+      select(MonitoringLocationIdentifier, MonitoringLocationName, LatitudeMeasure, LongitudeMeasure,
+             ActivityIdentifier, ActivityTypeCode, ActivityMediaName, ActivityMediaSubdivisionName,
+             ActivityStartDate, ActivityStartTime.Time, CharacteristicName, ResultSampleFractionText, ResultDetectionConditionText,
+             result, ResultMeasure.MeasureUnitCode, ResultAnalyticalMethod.MethodIdentifier,
+             ResultAnalyticalMethod.MethodIdentifierContext, DetectionQuantitationLimitTypeName, 
+             DetectionQuantitationLimitMeasure.MeasureValue, DetectionQuantitationLimitMeasure.MeasureUnitCode,
+             ResultCommentText)
+  })
+
+
+renderDT(for_table(), extensions = "Buttons", options = list(autowidth = TRUE, scrollX = TRUE, scrollY = "400px",
+                          dom = "Blfrtip", buttons = c("copy", "csv", "print"), 
+                          lengthMenu = list(c(-1, 10, 50), c('All', '10', '50')), pagelength = 50), 
+         filter = 'top',
+         caption = "NOTE: this table displays only a subset of data columns available in Water Quality Portal  for easier display. Use 'Link to Data' tab to download the complete dataset from Water Quality Portal.")
+```
+
+
+Link to Data
+=================================================================================================
+### Links
+
+The 'Data Table' tab displays only a subset of results columns for selected data for ease of display. All site data can
+be accessed and queried through Water Quality Portal.
+
+```{r}
+
+site_for_link <-reactive({unique(selectedsite()$MonitoringLocationIdentifier)})
+
+renderUI({
+ a("Link to selected site on Water Quality Portal", class = "web", href = paste0("https://www.waterqualitydata.us/portal#siteid=", site_for_link(), "&mimeType=csv", sep = ""))
+
+})
+  
+```
+
+About
+====================================================================================================
+### Idaho DEQ Lewiston Regional Office Surface Water Dashboard
+Last updated: 12/17/2020
+
+created by Jason Williams (jason.williams@deq.idaho.gov)
+
+source code: https://github.com/jjwill2/LROdashboard
+
+
+This application displays Idaho DEQ Lewiston Regional Office water quality data avaialble in
+Water Quality Portal (www.waterqualitydata.us). Currently, only relatively recent (2017-present)
+discrete data have been uploaded to Water Quality Portal and thus are available through
+this application. Older data and continuous data (temperature logger data, sonde data) are not currently 
+in Water Quality Portal or available through this application. 
+
+This dashboard was developed to help DEQ staff to browse and access regional water quality data.
+After selecting a site, users can follow the link on the 'Link to Data' tab to query and download site data from Water Quality Portal.
+
+Each time this application is loaded, it grabs current Water Quality Portal Data using associated web services. In addition, Clean Water Act assessment units (AUs), associated support status in Idaho's 2018/2020 Integrated Report, and DEQ Beneficial Use Reconnaisance Program (BURP) data are loaded and displayed using DEQ web services. 
+
+For more information:
+
+Idaho's Integrated Report: http://www.deq.idaho.gov/water-quality/surface-water/monitoring-assessment/integrated-report.aspx
+
+DEQ Beneficial Use Reconnaisance Program (BURP): https://www.deq.idaho.gov/burp
